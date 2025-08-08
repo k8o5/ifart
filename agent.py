@@ -31,24 +31,30 @@ def get_next_action(image, objective):
     # Get image dimensions for precise coordinate calculation
     width, height = image.size
     
-    # Enhanced prompt for 100% precise coordinate detection
+    # Enhanced prompt for keyboard-first interaction
     prompt_parts = [
         f"""
-        You are an AI agent controlling a desktop (primarily Debian XFCE, but adapt to visible UI elements if it looks like Windows or another OS).
-        Analyze the screenshot carefully to identify exact pixel coordinates for interactions.
-        Screenshot dimensions: {width}x{height} pixels.
-        Steps to follow for precision:
-        1. Examine the entire image for UI elements like icons, buttons, menus, or text relevant to the objective.
-        2. Identify the target element's position: note its shape, color, text, and bounding box.
-        3. Calculate the exact center coordinates (X,Y) of the interactive area—aim for the middle to ensure accurate clicks.
-        4. Double-check: Ensure X is between 0 and {width-1}, Y between 0 and {height-1}. Avoid guessing; base on visible pixels.
-        Decide the SINGLE next action to achieve: '{objective}'.
-        Respond with ONE line ONLY, using:
-        - CLICK X,Y "reason" (e.g., CLICK 75,32 "Click menu icon center")
-        - TYPE "text" (e.g., TYPE "hello")
-        - PRESS "key" (e.g., PRESS "enter")
-        - DONE "reason" (when complete)
-        Be 100% precise with coordinates based on the image.
+        You are an AI agent controlling a desktop. Your primary mode of interaction is the KEYBOARD.
+        Your objective is: '{objective}'.
+        Analyze the screenshot and decide the single next action to take.
+
+        **Action Strategy:**
+        1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`). Use keyboard shortcuts, navigation (Tab, arrows), and commands. This is faster and more reliable.
+        2.  **Use Mouse as a Fallback:** Only use `CLICK` if a keyboard action is not possible or highly inefficient.
+        3.  **Be Precise:** When you must click, calculate the exact center coordinates (X,Y) of the target element. The screen dimensions are {width}x{height}.
+
+        **Action Format (respond with ONE line ONLY):**
+        - `TYPE "text to type"` (for text input)
+        - `PRESS "key_name"` (for single keys like "enter", "tab", "f1", or combinations like "ctrl+c")
+        - `CLICK X,Y "reason for clicking"` (as a last resort)
+        - `DONE "reason"` (when the objective is complete)
+
+        **Example Keyboard-First Thinking:**
+        - To open a file menu, instead of `CLICK 12,34 "File Menu"`, prefer `PRESS "alt+f"`.
+        - To switch between fields, use `PRESS "tab"`.
+        - To submit a form, use `PRESS "enter"`.
+
+        Now, analyze the screen and determine the most efficient, keyboard-first action.
         Current screen:
         """,
         image,

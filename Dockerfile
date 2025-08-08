@@ -1,5 +1,5 @@
 # Basis-Image Debian 11 (Bullseye) - restored to original base for compatibility
-FROM debian:11
+FROM debian:11-slim
 
 # Metadaten für das Image
 LABEL maintainer="Docker GUI"
@@ -34,6 +34,7 @@ RUN apt-get update && \
     python3-dev \
     gnome-screenshot \
     xfce4-terminal \
+    firefox-esr \
     && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*

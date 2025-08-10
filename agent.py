@@ -49,6 +49,11 @@ def get_next_action(image, objective):
         - `CLICK X,Y "reason for clicking"` (as a last resort)
         - `DONE "reason"` (when the objective is complete)
 
+        **Captcha Solving:**
+        - If you encounter a CAPTCHA, analyze the image to identify the characters.
+        - Use the `TYPE` command to enter the characters into the input field.
+        - Example: If you see a captcha with the text "kH2s5", you would respond with `TYPE "kH2s5"`.
+
         **Example Keyboard-First Thinking:**
         - To open a file menu, instead of `CLICK 12,34 "File Menu"`, prefer `PRESS "alt+f"`.
         - To switch between fields, use `PRESS "tab"`.
@@ -96,8 +101,13 @@ def execute_action(action):
             text_to_type = type_pattern.group(1)
             pyautogui.write(text_to_type, interval=0.05)  # Faster typing interval
         elif press_pattern:
-            key = press_pattern.group(1).lower()
-            pyautogui.press(key)
+            key_string = press_pattern.group(1).lower()
+            # Handle key combinations for shortcuts
+            if '+' in key_string:
+                keys = [k.strip() for k in key_string.split('+')]
+                pyautogui.hotkey(*keys)
+            else:
+                pyautogui.press(key_string)
         elif done_pattern:
             print(f"Objective achieved: {done_pattern.group(1)}")
             return True

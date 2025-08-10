@@ -43,24 +43,17 @@ RUN apt-get update && \
 RUN pip3 install --no-cache-dir \
     pyautogui \
     google-generativeai \
-    Pillow
+    Pillow \
+    flask
 
-# Copy the agent script into the image
-COPY agent.py /agent.py
+# Copy the entire application into /app
+WORKDIR /app
+COPY server.py agent.py ./
+COPY static/ ./static/
+COPY templates/ ./templates/
+WORKDIR /
 
-# --- AUTOSTART CONFIGURATION ---
-# Create the autostart directory and the .desktop file to run the agent on startup with optional objective
-RUN mkdir -p /root/.config/autostart
-COPY <<EOF /root/.config/autostart/agent.desktop
-[Desktop Entry]
-Type=Application
-Name=AI Agent (Gemini 2.5 Flash)
-Exec=xfce4-terminal -e "python3 /agent.py --objective '$AGENT_OBJECTIVE'"
-StartupNotify=false
-Terminal=false
-EOF
-
-# Erstellen des VNC-Startskripts (restored to original with enhancements for robust startup)
+# Erstellen des VNC-Startskripts
 RUN mkdir -p /opt/startup/
 COPY <<EOF /opt/startup/vnc_startup.sh
 #!/bin/bash
@@ -68,19 +61,25 @@ export USER=root
 mkdir -p /root/.vnc
 echo "$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd
 chmod 600 /root/.vnc/passwd
-# Start XFCE session to ensure autostart works (added for reliability)
+# Start XFCE session
 startxfce4 &
 # Wait briefly for desktop to initialize
 sleep 2
-# Start VNC server (as in original)
+# Change to the app directory before running the server
+cd /app
+# Start the Flask web server in the background
+python3 server.py &
+# Launch Firefox to the web UI
+firefox-esr http://localhost:8080 &
+# Start VNC server
 vncserver "$DISPLAY" -depth 24 -geometry "$VNC_RESOLUTION" -localhost no
-# Start noVNC (as in original)
+# Start noVNC
 /usr/share/novnc/utils/launch.sh --vnc localhost:"$VNC_PORT" --listen "$NO_VNC_PORT"
 EOF
 RUN chmod +x /opt/startup/vnc_startup.sh
 
 # Ports freigeben
-EXPOSE 5901 6901
+EXPOSE 5901 6901 8080
 
 # Startbefehl
 CMD ["/opt/startup/vnc_startup.sh"]

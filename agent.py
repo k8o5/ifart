@@ -49,6 +49,11 @@ def get_next_action(image, objective):
         - `CLICK X,Y "reason for clicking"` (as a last resort)
         - `DONE "reason"` (when the objective is complete)
 
+        **Captcha Solving:**
+        - If you encounter a CAPTCHA, analyze the image to identify the characters.
+        - Use the `TYPE` command to enter the characters into the input field.
+        - Example: If you see a captcha with the text "kH2s5", you would respond with `TYPE "kH2s5"`.
+
         **Example Keyboard-First Thinking:**
         - To open a file menu, instead of `CLICK 12,34 "File Menu"`, prefer `PRESS "alt+f"`.
         - To switch between fields, use `PRESS "tab"`.

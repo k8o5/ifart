@@ -5,6 +5,7 @@ import time
 import re
 import argparse
 from PIL import Image
+import random
 
 # --- Configuration ---
 api_key = os.environ.get("GOOGLE_API_KEY")
@@ -27,10 +28,10 @@ def get_next_action(image, objective):
     """
     print("Thinking with Gemini 2.5 Flash...")
     model = genai.GenerativeModel('gemini-2.5-flash')
-    
+
     # Get image dimensions for precise coordinate calculation
     width, height = image.size
-    
+
     # Enhanced prompt for keyboard-first interaction
     prompt_parts = [
         f"""
@@ -40,26 +41,27 @@ def get_next_action(image, objective):
 
         **Action Strategy:**
         1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`). Use keyboard shortcuts, navigation (Tab, arrows), and commands. This is faster and more reliable.
-        2.  **Use Mouse as a Fallback:** Only use `CLICK` if a keyboard action is not possible or highly inefficient.
-        3.  **Be Precise:** When you must click, calculate the exact center coordinates (X,Y) of the target element. The screen dimensions are {width}x{height}.
+        2.  **Use Mouse for Complex Interactions:** Use mouse actions (`CLICK`, `DRAG`) only when necessary. Your mouse movements are human-like, with natural-seeming acceleration and slight imprecision. This is useful for CAPTCHAs.
+        3.  **Be Precise:** When you must use the mouse, calculate the exact center coordinates (X,Y) of the target element. The screen dimensions are {width}x{height}.
 
         **Action Format (respond with ONE line ONLY):**
         - `TYPE "text to type"` (for text input)
         - `PRESS "key_name"` (for single keys like "enter", "tab", "f1", or combinations like "ctrl+c")
-        - `CLICK X,Y "reason for clicking"` (as a last resort)
+        - `CLICK X,Y "reason for clicking"`
+        - `DRAG X1,Y1 TO X2,Y2 "reason for dragging"` (for drag-and-drop)
         - `DONE "reason"` (when the objective is complete)
 
         **Captcha Solving:**
-        - If you encounter a CAPTCHA, analyze the image to identify the characters.
-        - Use the `TYPE` command to enter the characters into the input field.
-        - Example: If you see a captcha with the text "kH2s5", you would respond with `TYPE "kH2s5"`.
+        - If you encounter a text-based CAPTCHA, use the `TYPE` command to enter the characters.
+        - If you encounter a visual CAPTCHA (e.g., "select all images with cars"), `CLICK` on the correct images.
+        - If you encounter a drag-and-drop CAPTCHA, use the `DRAG` command.
 
         **Example Keyboard-First Thinking:**
         - To open a file menu, instead of `CLICK 12,34 "File Menu"`, prefer `PRESS "alt+f"`.
         - To switch between fields, use `PRESS "tab"`.
         - To submit a form, use `PRESS "enter"`.
 
-        Now, analyze the screen and determine the most efficient, keyboard-first action.
+        Now, analyze the screen and determine the most efficient action.
         Current screen:
         """,
         image,
@@ -88,7 +90,8 @@ def execute_action(action):
     type_pattern = re.match(r'TYPE\s+"(.*)"', action, re.IGNORECASE)
     press_pattern = re.match(r'PRESS\s+"(.*)"', action, re.IGNORECASE)
     done_pattern = re.match(r'DONE\s+"(.*)"', action, re.IGNORECASE)
-    
+    drag_pattern = re.match(r'DRAG\s+(\d+),(\d+)\s+TO\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
+
     try:
         if click_pattern:
             x, y, reason = int(click_pattern.group(1)), int(click_pattern.group(2)), click_pattern.group(3)
@@ -96,13 +99,41 @@ def execute_action(action):
             screen_width, screen_height = pyautogui.size()
             if not (0 <= x < screen_width and 0 <= y < screen_height):
                 raise ValueError(f"Invalid coordinates ({x}, {y}) outside screen bounds (0-{screen_width-1}, 0-{screen_height-1})")
-            pyautogui.click(x, y)
+
+            # Human-like mouse movement
+            target_x = x + random.randint(-2, 2)
+            target_y = y + random.randint(-2, 2)
+
+            # Ensure target is still within bounds
+            target_x = max(0, min(screen_width - 1, target_x))
+            target_y = max(0, min(screen_height - 1, target_y))
+
+            duration = random.uniform(0.2, 0.7)
+            tween = pyautogui.easeInOutQuad
+            pyautogui.moveTo(target_x, target_y, duration=duration, tween=tween)
+            pyautogui.click()
+
+        elif drag_pattern:
+            x1, y1, x2, y2, reason = (int(drag_pattern.group(1)), int(drag_pattern.group(2)),
+                                      int(drag_pattern.group(3)), int(drag_pattern.group(4)),
+                                      drag_pattern.group(5))
+
+            screen_width, screen_height = pyautogui.size()
+            if not (0 <= x1 < screen_width and 0 <= y1 < screen_height and
+                    0 <= x2 < screen_width and 0 <= y2 < screen_height):
+                raise ValueError(f"Invalid coordinates in DRAG command.")
+
+            # Human-like drag
+            pyautogui.moveTo(x1, y1, duration=random.uniform(0.2, 0.5), tween=pyautogui.easeInOutQuad)
+            pyautogui.mouseDown()
+            pyautogui.moveTo(x2, y2, duration=random.uniform(0.5, 1.0), tween=pyautogui.easeInOutQuad)
+            pyautogui.mouseUp()
+
         elif type_pattern:
             text_to_type = type_pattern.group(1)
-            pyautogui.write(text_to_type, interval=0.05)  # Faster typing interval
+            pyautogui.write(text_to_type, interval=0.05)
         elif press_pattern:
             key_string = press_pattern.group(1).lower()
-            # Handle key combinations for shortcuts
             if '+' in key_string:
                 keys = [k.strip() for k in key_string.split('+')]
                 pyautogui.hotkey(*keys)
@@ -115,8 +146,8 @@ def execute_action(action):
             print(f"Unknown or malformed command: {action}")
     except Exception as e:
         print(f"Error executing action '{action}': {e}")
-        return False  # Return False to continue looping
-    
+        return False
+
     return False
 
 # --- Main Loop ---

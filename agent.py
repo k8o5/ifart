@@ -121,41 +121,58 @@ def execute_action(action):
 
 # --- Main Loop ---
 
-def main(objective, max_steps=None):
-    """The main function to run the agent."""
-    print(f"--- Starting Agent ---")
+def run_objective(objective, max_steps=None):
+    """Runs the agent for a single objective."""
+    print(f"--- Starting Objective ---")
     print(f"Objective: {objective}")
 
     is_done = False
     step_count = 0
     sleep_duration = 0.5  # Reduced for speed; adjust as needed
-    
+
     while not is_done:
         if max_steps is not None and step_count >= max_steps:
             print(f"--- Agent Stopped: Max steps ({max_steps}) reached ---")
             break
-        
+
         time.sleep(sleep_duration)  # Minimal delay for UI updates
-        
+
         screenshot_image = capture_screen()
         action_command = get_next_action(screenshot_image, objective)
-        
+
         if action_command:
             is_done = execute_action(action_command)
         else:
             print("Did not receive a command. Retrying...")
             sleep_duration += 0.5  # Exponential backoff for retries
-        
+
         step_count += 1
-            
+
     if is_done:
-        print("--- Agent Finished Successfully ---")
+        print("--- Objective Finished Successfully ---")
     else:
-        print("--- Agent Stopped ---")
+        print("--- Objective Stopped ---")
+
+def main():
+    """The main interactive loop for the agent."""
+    parser = argparse.ArgumentParser(description="AI Desktop Agent")
+    parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per objective (default: unlimited)")
+    args = parser.parse_args()
+
+    while True:
+        objective = input("Please enter your next objective (or type 'exit' to quit): ")
+        if objective.lower() == 'exit':
+            print("Exiting agent.")
+            break
+        if not objective.strip():
+            print("Objective cannot be empty.")
+            continue
+
+        run_objective(objective, args.max_steps)
+        print("\n" + "="*30)
+        print("Objective complete. Ready for the next one.")
+        print("="*30 + "\n")
+
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="AI Desktop Agent")
-    parser.add_argument("--objective", default="Open the file manager and create a new folder named 'Gemini-2.5-Test'.", help="Set the agent's objective")
-    parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps to prevent infinite loops (default: unlimited)")
-    args = parser.parse_args()
-    main(args.objective, args.max_steps)
+    main()

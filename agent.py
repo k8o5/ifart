@@ -6,6 +6,7 @@ import re
 import argparse
 from PIL import Image
 import random
+import json
 
 # --- Configuration ---
 api_key = os.environ.get("GOOGLE_API_KEY")
@@ -37,31 +38,27 @@ def get_next_action(image, objective):
         f"""
         You are an AI agent controlling a desktop. Your primary mode of interaction is the KEYBOARD.
         Your objective is: '{objective}'.
-        Analyze the screenshot and decide the single next action to take.
+        Analyze the screenshot and decide the next action or sequence of actions to take.
 
         **Action Strategy:**
         1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`). Use keyboard shortcuts, navigation (Tab, arrows), and commands. This is faster and more reliable.
         2.  **Use Mouse for Complex Interactions:** Use mouse actions (`CLICK`, `DRAG`) only when necessary. Your mouse movements are human-like, with natural-seeming acceleration and slight imprecision. This is useful for CAPTCHAs.
         3.  **Be Precise:** When you must use the mouse, calculate the exact center coordinates (X,Y) of the target element. The screen dimensions are {width}x{height}.
+        4.  **Sequence Commands:** For multi-step tasks, use the `COMMANDS` action to group a sequence of actions together.
 
-        **Action Format (respond with ONE line ONLY):**
-        - `TYPE "text to type"` (for text input)
-        - `PRESS "key_name"` (for single keys like "enter", "tab", "f1", or combinations like "ctrl+c")
-        - `CLICK X,Y "reason for clicking"`
-        - `DRAG X1,Y1 TO X2,Y2 "reason for dragging"` (for drag-and-drop)
+        **Action Format:**
+        - `TYPE "text to type"`
+        - `PRESS "key_name"` (e.g., "enter", "tab", "ctrl+c")
+        - `CLICK X,Y "reason"`
+        - `DRAG X1,Y1 TO X2,Y2 "reason"`
+        - `COMMANDS ["action1", "action2", ...]` (for a sequence of actions)
         - `DONE "reason"` (when the objective is complete)
-
-        **Captcha Solving:**
-        - If you encounter a text-based CAPTCHA, use the `TYPE` command to enter the characters.
-        - If you encounter a visual CAPTCHA (e.g., "select all images with cars"), `CLICK` on the correct images.
-        - If you encounter a drag-and-drop CAPTCHA, use the `DRAG` command.
 
         **Example Keyboard-First Thinking:**
         - To open a file menu, instead of `CLICK 12,34 "File Menu"`, prefer `PRESS "alt+f"`.
-        - To switch between fields, use `PRESS "tab"`.
-        - To submit a form, use `PRESS "enter"`.
+        - To open a terminal, type a command, and press enter: `COMMANDS ["PRESS 'win'", "TYPE 'terminal'", "PRESS 'enter'", "TYPE 'echo hello'", "PRESS 'enter'"]`
 
-        Now, analyze the screen and determine the most efficient action.
+        Now, analyze the screen and determine the most efficient action(s).
         Current screen:
         """,
         image,
@@ -69,12 +66,28 @@ def get_next_action(image, objective):
 
     try:
         response = model.generate_content(prompt_parts)
-        # Extract the first line of text for safety
-        action_text = response.text.strip().split('\n')[0]
+        action_text = response.text.strip()
         return action_text
     except Exception as e:
         print(f"Error calling Gemini API: {e}")
         return None
+
+def get_vision_understanding(image):
+    """
+    Uses Gemini to describe the given image.
+    """
+    print("Gemini is trying to understand the screen...")
+    model = genai.GenerativeModel('gemini-2.5-flash')
+    prompt_parts = [
+        "Describe what you see on the screen. Be concise and focus on the most important elements.",
+        image,
+    ]
+    try:
+        response = model.generate_content(prompt_parts)
+        return response.text.strip()
+    except Exception as e:
+        print(f"Error calling Gemini API for vision understanding: {e}")
+        return "Error: Could not understand the screen."
 
 def execute_action(action):
     """Parses and executes the action string from the LLM using regex for robustness, with coordinate validation."""
@@ -91,9 +104,27 @@ def execute_action(action):
     press_pattern = re.match(r'PRESS\s+"(.*)"', action, re.IGNORECASE)
     done_pattern = re.match(r'DONE\s+"(.*)"', action, re.IGNORECASE)
     drag_pattern = re.match(r'DRAG\s+(\d+),(\d+)\s+TO\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
+    commands_pattern = re.match(r'COMMANDS\s+(.*)', action, re.IGNORECASE)
 
     try:
-        if click_pattern:
+        if commands_pattern:
+            commands_list_str = commands_pattern.group(1)
+            try:
+                commands_list = json.loads(commands_list_str)
+                if isinstance(commands_list, list):
+                    for command in commands_list:
+                        # Recursive call to execute each command in the list
+                        execute_action(command)
+                    return False, True  # Not done, but it was a COMMANDS action
+                else:
+                    raise ValueError("COMMANDS action requires a list of strings.")
+            except json.JSONDecodeError:
+                print(f"Error: Could not decode JSON in COMMANDS: {commands_list_str}")
+            except ValueError as e:
+                print(f"Error: {e}")
+            return False, False # Error case
+
+        elif click_pattern:
             x, y, reason = int(click_pattern.group(1)), int(click_pattern.group(2)), click_pattern.group(3)
             # Validate coordinates against screen size
             screen_width, screen_height = pyautogui.size()
@@ -141,14 +172,14 @@ def execute_action(action):
                 pyautogui.press(key_string)
         elif done_pattern:
             print(f"Objective achieved: {done_pattern.group(1)}")
-            return True
+            return True, False
         else:
             print(f"Unknown or malformed command: {action}")
     except Exception as e:
         print(f"Error executing action '{action}': {e}")
-        return False
+        return False, False
 
-    return False
+    return False, False
 
 # --- Main Loop ---
 
@@ -172,7 +203,14 @@ def run_objective(objective, max_steps=None):
         action_command = get_next_action(screenshot_image, objective)
 
         if action_command:
-            is_done = execute_action(action_command)
+            is_done, is_commands = execute_action(action_command)
+            if is_commands:
+                # After a COMMANDS sequence, get a vision understanding of the screen
+                time.sleep(1.0) # Wait a moment for the UI to settle
+                screenshot_image = capture_screen()
+                vision_description = get_vision_understanding(screenshot_image)
+                print(f"\n--- Screen Description ---\n{vision_description}\n--------------------------\n")
+
         else:
             print("Did not receive a command. Retrying...")
             sleep_duration += 0.5  # Exponential backoff for retries

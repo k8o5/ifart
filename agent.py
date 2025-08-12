@@ -172,17 +172,8 @@ def execute_action(action):
             if not (0 <= x < screen_width and 0 <= y < screen_height):
                 raise ValueError(f"Invalid coordinates ({x}, {y}) outside screen bounds (0-{screen_width-1}, 0-{screen_height-1})")
 
-            # Human-like mouse movement
-            target_x = x + random.randint(-2, 2)
-            target_y = y + random.randint(-2, 2)
-
-            # Ensure target is still within bounds
-            target_x = max(0, min(screen_width - 1, target_x))
-            target_y = max(0, min(screen_height - 1, target_y))
-
-            duration = random.uniform(0.2, 0.7)
-            tween = pyautogui.easeInOutQuad
-            pyautogui.moveTo(target_x, target_y, duration=duration, tween=tween)
+            # Move to coordinates with machine-like precision
+            pyautogui.moveTo(x, y, duration=0.1)
             pyautogui.click()
 
         elif type_pattern:

@@ -64,11 +64,11 @@ def create_plan(objective):
         print(f"Error creating plan with Gemini: {e}")
         return []
 
-def get_next_action(image, main_objective, plan, current_step, action_history):
+def get_next_action(interaction_state, image, main_objective, plan, current_step, action_history, last_hover_target):
     """
-    Sends the current screen and context (including history) to Gemini to get the next action.
+    Sends the current screen and context to Gemini to get the next action, using a state-based prompt.
     """
-    print(f"Thinking about next action for step: {current_step}")
+    print(f"Thinking about next action for step: '{current_step}' (State: {interaction_state})")
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     width, height = image.size
@@ -76,39 +76,58 @@ def get_next_action(image, main_objective, plan, current_step, action_history):
     plan_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(plan)])
     history_str = "\n".join([f"- {a}" for a in action_history]) if action_history else "No actions taken yet."
 
-    prompt_parts = [
-        f"""
-        You are an AI agent controlling a desktop. Your goal is to achieve the objective by following a plan.
+    if interaction_state == "AWAITING_CONFIRMATION":
+        # Specialized prompt for the "Reflect" step
+        hover_context = f"You believe you are hovering over: '{last_hover_target}'." if last_hover_target else ""
+        prompt_parts = [
+            f"""
+            You have just moved your mouse to ({mouse_x}, {mouse_y}). {hover_context}
+            Your current step is: '{current_step}'.
 
-        **Objective:** '{main_objective}'
+            **Reflect and Decide:**
+            1.  Analyze the screenshot and your cursor position.
+            2.  Is this the correct place to click to make progress?
 
-        **Plan:**
-        {plan_str}
+            **Next Action:**
+            - If YES, the position is correct, your action MUST be: `CLICK "reason for clicking"`
+            - If NO, the position is wrong, you MUST EITHER:
+                - `MOVE X,Y "new reason"` to a better position.
+                - Use a keyboard action like `PRESS "key"` if clicking is not the right approach.
 
-        **Current Step:** '{current_step}'
+            Do not use `DONE` unless the entire step is complete.
+            Current screen:
+            """,
+            image,
+        ]
+    else: # AWAITING_MOVE or any other general state
+        # General prompt for deciding the next high-level action
+        prompt_parts = [
+            f"""
+            You are an AI agent. Your goal is to execute the current step of your plan.
 
-        **Screen & Senses:**
-        - The screen is {width}x{height}.
-        - The mouse cursor is at ({mouse_x}, {mouse_y}).
+            **Objective:** '{main_objective}'
+            **Current Step:** '{current_step}'
 
-        **Self-Correction:**
-        You have already taken these actions for the current step:
-        {history_str}
+            **Screen & Senses:**
+            - The screen is {width}x{height}.
+            - The mouse cursor is at ({mouse_x}, {mouse_y}).
 
-        If your previous actions are not working or you are in a loop, you MUST try a different action. Analyze your history and the screen to find a new approach. Do not repeat failed actions.
+            **Self-Correction:**
+            Your action history for this step:
+            {history_str}
+            If you are stuck, you MUST try a different action. Do not repeat failed actions.
 
-        **Action Format (Strict):**
-        - `TYPE "text"`
-        - `PRESS "key"`
-        - `CLICK X,Y "reason"`
-        - `COMMANDS ["action1", ...]`
-        - `DONE "reason"` (Use this ONLY when the current step is fully complete)
+            **Action Format (Strict):**
+            - `MOVE X,Y "reason"` (to move the mouse for a future click)
+            - `TYPE "text"`
+            - `PRESS "key"`
+            - `DONE "reason"` (Use this ONLY when the current step is fully complete)
 
-        Determine the single best action to take next to progress on the current step.
-        Current screen:
-        """,
-        image,
-    ]
+            Determine the single best action to take next.
+            Current screen:
+            """,
+            image,
+        ]
 
     try:
         response = model.generate_content(prompt_parts)
@@ -145,39 +164,26 @@ def execute_action(action):
     action = action.strip()
     
     # Regex patterns for reliable parsing
-    click_pattern = re.match(r'CLICK\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
+    move_pattern = re.match(r'MOVE\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
+    click_pattern = re.match(r'CLICK\s+"(.*)"', action, re.IGNORECASE)
     type_pattern = re.match(r'TYPE\s+"(.*)"', action, re.IGNORECASE)
     press_pattern = re.match(r'PRESS\s+"(.*)"', action, re.IGNORECASE)
     done_pattern = re.match(r'DONE\s+"(.*)"', action, re.IGNORECASE)
-    commands_pattern = re.match(r'COMMANDS\s+(.*)', action, re.IGNORECASE)
 
     try:
-        if commands_pattern:
-            commands_list_str = commands_pattern.group(1)
-            try:
-                commands_list = json.loads(commands_list_str)
-                if isinstance(commands_list, list):
-                    for command in commands_list:
-                        # Recursive call to execute each command in the list
-                        execute_action(command)
-                    return False, True  # Not done, but it was a COMMANDS action
-                else:
-                    raise ValueError("COMMANDS action requires a list of strings.")
-            except json.JSONDecodeError:
-                print(f"Error: Could not decode JSON in COMMANDS: {commands_list_str}")
-            except ValueError as e:
-                print(f"Error: {e}")
-            return False, False # Error case
-
-        elif click_pattern:
-            x, y, reason = int(click_pattern.group(1)), int(click_pattern.group(2)), click_pattern.group(3)
+        if move_pattern:
+            x, y, reason = int(move_pattern.group(1)), int(move_pattern.group(2)), move_pattern.group(3)
             # Validate coordinates against screen size
             screen_width, screen_height = pyautogui.size()
             if not (0 <= x < screen_width and 0 <= y < screen_height):
                 raise ValueError(f"Invalid coordinates ({x}, {y}) outside screen bounds (0-{screen_width-1}, 0-{screen_height-1})")
 
-            # Move to coordinates with machine-like precision
+            # Move to coordinates
             pyautogui.moveTo(x, y, duration=0.1)
+
+        elif click_pattern:
+            # Hover for a moment, then click at the current position
+            time.sleep(0.2)
             pyautogui.click()
 
         elif type_pattern:
@@ -218,8 +224,10 @@ def run_objective(objective, max_steps=None):
 
         step_done = False
         attempts = 0
-        max_attempts_per_step = 10  # Failsafe to prevent infinite loops
+        max_attempts_per_step = 15  # Increased for multi-step interactions
         action_history = []
+        last_hover_target = None
+        interaction_state = "AWAITING_MOVE"
 
         # Sub-loop for each step
         while not step_done:
@@ -234,12 +242,29 @@ def run_objective(objective, max_steps=None):
             time.sleep(0.5)
             screenshot_image = capture_screen()
 
-            # Get next action based on the full context, including history
-            action_command = get_next_action(screenshot_image, objective, plan, step, action_history)
+            action_command = get_next_action(
+                interaction_state, screenshot_image, objective, plan, step, action_history, last_hover_target
+            )
 
             if action_command:
                 action_history.append(action_command)
-                # The 'DONE' command now signals step completion
+
+                # State transition logic
+                if interaction_state == "AWAITING_MOVE" and action_command.upper().startswith("MOVE"):
+                    interaction_state = "AWAITING_CONFIRMATION"
+                elif interaction_state == "AWAITING_CONFIRMATION":
+                    if action_command.upper().startswith("CLICK"):
+                        interaction_state = "AWAITING_MOVE" # Reset after click
+                    # If it's another MOVE, we stay in AWAITING_CONFIRMATION
+
+                # Parse hover context from MOVE commands
+                move_match = re.match(r'MOVE\s+(\d+),(\d+)\s+"(.*)"', action_command, re.IGNORECASE)
+                if move_match:
+                    last_hover_target = move_match.group(3)
+                elif not action_command.upper().startswith("CLICK"):
+                    # Reset hover target if the action is not a click or a new move
+                    last_hover_target = None
+
                 is_step_done, _ = execute_action(action_command)
                 if is_step_done:
                     print(f"--- Step {i+1} marked as complete. ---")

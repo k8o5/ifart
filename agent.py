@@ -22,58 +22,15 @@ def capture_screen():
     screenshot = pyautogui.screenshot()
     return screenshot
 
-def create_plan(objective):
-    """
-    Generates a step-by-step plan to achieve the given objective.
-    """
-    print("Asking Gemini to create a plan...")
-    model = genai.GenerativeModel('gemini-2.5-flash')
-
-    prompt = f"""
-    You are an AI planner. Your task is to create a step-by-step plan to achieve the following objective.
-    The plan should be a sequence of simple, high-level actions.
-    For any web searches, you must use DuckDuckGo.
-
-    Objective: '{objective}'
-
-    Provide the plan as a numbered list. For example:
-    1. Open Firefox.
-    2. Navigate to duckduckgo.com.
-    3. Search for "best open source projects".
-    4. ...
-
-    Now, create the plan for the objective above.
-    """
-
-    try:
-        response = model.generate_content(prompt)
-        plan_text = response.text.strip()
-        # Parse the numbered list into a Python list
-        plan_steps = [step.strip() for step in re.findall(r'^\d+\.\s+(.*)', plan_text, re.MULTILINE)]
-        if not plan_steps:
-            # Fallback if the model doesn't return a numbered list
-            plan_steps = [line.strip() for line in plan_text.split('\n') if line.strip()]
-
-        print("--- Plan Created ---")
-        for i, step in enumerate(plan_steps, 1):
-            print(f"{i}. {step}")
-        print("--------------------")
-
-        return plan_steps
-    except Exception as e:
-        print(f"Error creating plan with Gemini: {e}")
-        return []
-
-def get_next_action(interaction_state, image, main_objective, plan, current_step, action_history, last_hover_target):
+def get_next_action(interaction_state, image, main_objective, action_history, last_hover_target):
     """
     Sends the current screen and context to Gemini to get the next action, using a state-based prompt.
     """
-    print(f"Thinking about next action for step: '{current_step}' (State: {interaction_state})")
+    print(f"Thinking about next action... (State: {interaction_state})")
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     width, height = image.size
     mouse_x, mouse_y = pyautogui.position()
-    plan_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(plan)])
     history_str = "\n".join([f"- {a}" for a in action_history]) if action_history else "No actions taken yet."
 
     if interaction_state == "AWAITING_CONFIRMATION":
@@ -82,7 +39,7 @@ def get_next_action(interaction_state, image, main_objective, plan, current_step
         prompt_parts = [
             f"""
             You have just moved your mouse to ({mouse_x}, {mouse_y}). {hover_context}
-            Your current step is: '{current_step}'.
+            Your objective is: '{main_objective}'.
 
             **Reflect and Decide:**
             1.  Analyze the screenshot and your cursor position.
@@ -94,7 +51,7 @@ def get_next_action(interaction_state, image, main_objective, plan, current_step
                 - `MOVE X,Y "new reason"` to a better position.
                 - Use a keyboard action like `PRESS "key"` if clicking is not the right approach.
 
-            Do not use `DONE` unless the entire step is complete.
+            Do not use `DONE` unless the entire objective is complete.
             Current screen:
             """,
             image,
@@ -103,17 +60,16 @@ def get_next_action(interaction_state, image, main_objective, plan, current_step
         # General prompt for deciding the next high-level action
         prompt_parts = [
             f"""
-            You are an AI agent. Your goal is to execute the current step of your plan.
+            You are an AI agent. Your goal is to achieve your objective.
 
             **Objective:** '{main_objective}'
-            **Current Step:** '{current_step}'
 
             **Screen & Senses:**
             - The screen is {width}x{height}.
             - The mouse cursor is at ({mouse_x}, {mouse_y}).
 
             **Self-Correction:**
-            Your action history for this step:
+            Your action history for this objective:
             {history_str}
             If you are stuck, you MUST try a different action. Do not repeat failed actions.
 
@@ -121,7 +77,7 @@ def get_next_action(interaction_state, image, main_objective, plan, current_step
             - `MOVE X,Y "reason"` (to move the mouse for a future click)
             - `TYPE "text"`
             - `PRESS "key"`
-            - `DONE "reason"` (Use this ONLY when the current step is fully complete)
+            - `DONE "reason"` (Use this ONLY when the objective is fully complete)
 
             Determine the single best action to take next.
             Current screen:
@@ -210,72 +166,60 @@ def execute_action(action):
 # --- Main Loop ---
 
 def run_objective(objective, max_steps=None):
-    """Runs the agent for a single objective using a plan-based approach."""
+    """Runs the agent for a single objective until it is marked as DONE."""
     print(f"--- Starting Objective: {objective} ---")
 
-    plan = create_plan(objective)
-    if not plan:
-        print("--- Agent Stopped: Could not create a plan. ---")
-        return
+    objective_done = False
+    attempts = 0
+    action_history = []
+    last_hover_target = None
+    interaction_state = "AWAITING_MOVE"
 
-    # Main loop iterates through the plan
-    for i, step in enumerate(plan):
-        print(f"\n--- Executing Step {i+1}/{len(plan)}: {step} ---")
+    while not objective_done:
+        if max_steps is not None and attempts >= max_steps:
+            print(f"--- Agent Stopped: Max steps ({max_steps}) reached. ---")
+            break
 
-        step_done = False
-        attempts = 0
-        max_attempts_per_step = 15  # Increased for multi-step interactions
-        action_history = []
-        last_hover_target = None
-        interaction_state = "AWAITING_MOVE"
+        time.sleep(0.5)
+        screenshot_image = capture_screen()
 
-        # Sub-loop for each step
-        while not step_done:
-            if attempts >= max_attempts_per_step:
-                print(f"--- Warning: Max attempts reached for step. Moving to next one. ---")
-                break
+        action_command = get_next_action(
+            interaction_state, screenshot_image, objective, action_history, last_hover_target
+        )
 
-            if max_steps is not None and i >= max_steps:
-                print(f"--- Agent Stopped: Global max steps ({max_steps}) reached. ---")
-                return
+        if action_command:
+            action_history.append(action_command)
 
-            time.sleep(0.5)
-            screenshot_image = capture_screen()
+            # State transition logic
+            if interaction_state == "AWAITING_MOVE" and action_command.upper().startswith("MOVE"):
+                interaction_state = "AWAITING_CONFIRMATION"
+            elif interaction_state == "AWAITING_CONFIRMATION":
+                if action_command.upper().startswith("CLICK"):
+                    interaction_state = "AWAITING_MOVE" # Reset after click
+                # If it's another MOVE, we stay in AWAITING_CONFIRMATION
 
-            action_command = get_next_action(
-                interaction_state, screenshot_image, objective, plan, step, action_history, last_hover_target
-            )
+            # Parse hover context from MOVE commands
+            move_match = re.match(r'MOVE\s+(\d+),(\d+)\s+"(.*)"', action_command, re.IGNORECASE)
+            if move_match:
+                last_hover_target = move_match.group(3)
+            elif not action_command.upper().startswith("CLICK"):
+                # Reset hover target if the action is not a click or a new move
+                last_hover_target = None
 
-            if action_command:
-                action_history.append(action_command)
+            is_objective_done, _ = execute_action(action_command)
+            if is_objective_done:
+                print(f"--- Objective marked as complete. ---")
+                objective_done = True
+        else:
+            print("Warning: Did not receive a valid command from the model. Retrying...")
+            time.sleep(1)
 
-                # State transition logic
-                if interaction_state == "AWAITING_MOVE" and action_command.upper().startswith("MOVE"):
-                    interaction_state = "AWAITING_CONFIRMATION"
-                elif interaction_state == "AWAITING_CONFIRMATION":
-                    if action_command.upper().startswith("CLICK"):
-                        interaction_state = "AWAITING_MOVE" # Reset after click
-                    # If it's another MOVE, we stay in AWAITING_CONFIRMATION
+        attempts += 1
 
-                # Parse hover context from MOVE commands
-                move_match = re.match(r'MOVE\s+(\d+),(\d+)\s+"(.*)"', action_command, re.IGNORECASE)
-                if move_match:
-                    last_hover_target = move_match.group(3)
-                elif not action_command.upper().startswith("CLICK"):
-                    # Reset hover target if the action is not a click or a new move
-                    last_hover_target = None
-
-                is_step_done, _ = execute_action(action_command)
-                if is_step_done:
-                    print(f"--- Step {i+1} marked as complete. ---")
-                    step_done = True  # Exit the sub-loop to the next step
-            else:
-                print("Warning: Did not receive a valid command from the model. Retrying...")
-                time.sleep(1) # Wait a bit longer on API failure
-
-            attempts += 1
-
-    print("\n--- Objective Finished ---")
+    if objective_done:
+        print("\n--- Objective Finished Successfully ---")
+    else:
+        print("\n--- Objective Stopped ---")
 
 def main():
     """The main entry point for the agent."""

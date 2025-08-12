@@ -22,43 +22,85 @@ def capture_screen():
     screenshot = pyautogui.screenshot()
     return screenshot
 
-def get_next_action(image, objective):
+def create_plan(objective):
     """
-    Sends the current screen and objective to the Gemini model to get the next action.
-    Uses the user-specified model for compatibility.
+    Generates a step-by-step plan to achieve the given objective.
     """
-    print("Thinking with Gemini 2.5 Flash...")
+    print("Asking Gemini to create a plan...")
     model = genai.GenerativeModel('gemini-2.5-flash')
 
-    # Get image dimensions for precise coordinate calculation
-    width, height = image.size
+    prompt = f"""
+    You are an AI planner. Your task is to create a step-by-step plan to achieve the following objective.
+    The plan should be a sequence of simple, high-level actions.
+    For any web searches, you must use DuckDuckGo.
 
-    # Enhanced prompt for keyboard-first interaction
+    Objective: '{objective}'
+
+    Provide the plan as a numbered list. For example:
+    1. Open Firefox.
+    2. Navigate to duckduckgo.com.
+    3. Search for "best open source projects".
+    4. ...
+
+    Now, create the plan for the objective above.
+    """
+
+    try:
+        response = model.generate_content(prompt)
+        plan_text = response.text.strip()
+        # Parse the numbered list into a Python list
+        plan_steps = [step.strip() for step in re.findall(r'^\d+\.\s+(.*)', plan_text, re.MULTILINE)]
+        if not plan_steps:
+            # Fallback if the model doesn't return a numbered list
+            plan_steps = [line.strip() for line in plan_text.split('\n') if line.strip()]
+
+        print("--- Plan Created ---")
+        for i, step in enumerate(plan_steps, 1):
+            print(f"{i}. {step}")
+        print("--------------------")
+
+        return plan_steps
+    except Exception as e:
+        print(f"Error creating plan with Gemini: {e}")
+        return []
+
+def get_next_action(image, main_objective, plan, current_step):
+    """
+    Sends the current screen and context to the Gemini model to get the next action.
+    """
+    print(f"Thinking about next action for step: {current_step}")
+    model = genai.GenerativeModel('gemini-2.5-flash')
+
+    width, height = image.size
+    plan_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(plan)])
+
     prompt_parts = [
         f"""
-        You are an AI agent controlling a desktop. Your primary mode of interaction is the KEYBOARD.
-        Your objective is: '{objective}'.
-        Analyze the screenshot and decide the next action or sequence of actions to take.
+        You are an AI agent controlling a desktop.
+        Your main objective is: '{main_objective}'.
+
+        You have created the following plan:
+        {plan_str}
+
+        You are currently on this step: '{current_step}'.
+
+        Analyze the screenshot and decide the single next action to take.
 
         **Action Strategy:**
-        1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`). Use keyboard shortcuts, navigation (Tab, arrows), and commands. This is faster and more reliable.
-        2.  **Use Mouse for Complex Interactions:** Use mouse actions (`CLICK`, `DRAG`) only when necessary. Your mouse movements are human-like, with natural-seeming acceleration and slight imprecision. This is useful for CAPTCHAs.
-        3.  **Be Precise:** When you must use the mouse, calculate the exact center coordinates (X,Y) of the target element. The screen dimensions are {width}x{height}.
-        4.  **Sequence Commands:** For multi-step tasks, use the `COMMANDS` action to group a sequence of actions together.
+        1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`).
+        2.  **Mouse for Necessity:** Use mouse actions (`CLICK`) only when a keyboard action is not possible.
+        3.  **Be Precise:** For mouse clicks, provide the exact X,Y coordinates. The screen is {width}x{height}.
+        4.  **Sequences:** Use `COMMANDS` to group a short sequence of actions.
+        5.  **Step Completion:** If you have successfully completed the current step, your action MUST be `DONE "reason for completion"`. This will move you to the next step.
 
-        **Action Format:**
+        **Action Format (Strict):**
         - `TYPE "text to type"`
-        - `PRESS "key_name"` (e.g., "enter", "tab", "ctrl+c")
+        - `PRESS "key"` (e.g., "enter", "tab", "ctrl+f")
         - `CLICK X,Y "reason"`
-        - `DRAG X1,Y1 TO X2,Y2 "reason"`
-        - `COMMANDS ["action1", "action2", ...]` (for a sequence of actions)
-        - `DONE "reason"` (when the objective is complete)
+        - `COMMANDS ["action1", "action2"]`
+        - `DONE "reason"`
 
-        **Example Keyboard-First Thinking:**
-        - To open a file menu, instead of `CLICK 12,34 "File Menu"`, prefer `PRESS "alt+f"`.
-        - To open a terminal, type a command, and press enter: `COMMANDS ["PRESS 'win'", "TYPE 'terminal'", "PRESS 'enter'", "TYPE 'echo hello'", "PRESS 'enter'"]`
-
-        Now, analyze the screen and determine the most efficient action(s).
+        Now, determine the most efficient action to progress on your current step.
         Current screen:
         """,
         image,
@@ -103,7 +145,6 @@ def execute_action(action):
     type_pattern = re.match(r'TYPE\s+"(.*)"', action, re.IGNORECASE)
     press_pattern = re.match(r'PRESS\s+"(.*)"', action, re.IGNORECASE)
     done_pattern = re.match(r'DONE\s+"(.*)"', action, re.IGNORECASE)
-    drag_pattern = re.match(r'DRAG\s+(\d+),(\d+)\s+TO\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
     commands_pattern = re.match(r'COMMANDS\s+(.*)', action, re.IGNORECASE)
 
     try:
@@ -144,22 +185,6 @@ def execute_action(action):
             pyautogui.moveTo(target_x, target_y, duration=duration, tween=tween)
             pyautogui.click()
 
-        elif drag_pattern:
-            x1, y1, x2, y2, reason = (int(drag_pattern.group(1)), int(drag_pattern.group(2)),
-                                      int(drag_pattern.group(3)), int(drag_pattern.group(4)),
-                                      drag_pattern.group(5))
-
-            screen_width, screen_height = pyautogui.size()
-            if not (0 <= x1 < screen_width and 0 <= y1 < screen_height and
-                    0 <= x2 < screen_width and 0 <= y2 < screen_height):
-                raise ValueError(f"Invalid coordinates in DRAG command.")
-
-            # Human-like drag
-            pyautogui.moveTo(x1, y1, duration=random.uniform(0.2, 0.5), tween=pyautogui.easeInOutQuad)
-            pyautogui.mouseDown()
-            pyautogui.moveTo(x2, y2, duration=random.uniform(0.5, 1.0), tween=pyautogui.easeInOutQuad)
-            pyautogui.mouseUp()
-
         elif type_pattern:
             text_to_type = type_pattern.group(1)
             pyautogui.write(text_to_type, interval=0.05)
@@ -171,7 +196,7 @@ def execute_action(action):
             else:
                 pyautogui.press(key_string)
         elif done_pattern:
-            print(f"Objective achieved: {done_pattern.group(1)}")
+            print(f"Completion reason: {done_pattern.group(1)}")
             return True, False
         else:
             print(f"Unknown or malformed command: {action}")
@@ -184,63 +209,78 @@ def execute_action(action):
 # --- Main Loop ---
 
 def run_objective(objective, max_steps=None):
-    """Runs the agent for a single objective."""
-    print(f"--- Starting Objective ---")
-    print(f"Objective: {objective}")
+    """Runs the agent for a single objective using a plan-based approach."""
+    print(f"--- Starting Objective: {objective} ---")
 
-    is_done = False
-    step_count = 0
-    sleep_duration = 0.5  # Reduced for speed; adjust as needed
+    plan = create_plan(objective)
+    if not plan:
+        print("--- Agent Stopped: Could not create a plan. ---")
+        return
 
-    while not is_done:
-        if max_steps is not None and step_count >= max_steps:
-            print(f"--- Agent Stopped: Max steps ({max_steps}) reached ---")
-            break
+    # Main loop iterates through the plan
+    for i, step in enumerate(plan):
+        print(f"\n--- Executing Step {i+1}/{len(plan)}: {step} ---")
 
-        time.sleep(sleep_duration)  # Minimal delay for UI updates
+        step_done = False
+        attempts = 0
+        max_attempts_per_step = 10  # Failsafe to prevent infinite loops
 
-        screenshot_image = capture_screen()
-        action_command = get_next_action(screenshot_image, objective)
+        # Sub-loop for each step
+        while not step_done:
+            if attempts >= max_attempts_per_step:
+                print(f"--- Warning: Max attempts reached for step. Moving to next one. ---")
+                break
 
-        if action_command:
-            is_done, is_commands = execute_action(action_command)
-            if is_commands:
-                # After a COMMANDS sequence, get a vision understanding of the screen
-                time.sleep(1.0) # Wait a moment for the UI to settle
-                screenshot_image = capture_screen()
-                vision_description = get_vision_understanding(screenshot_image)
-                print(f"\n--- Screen Description ---\n{vision_description}\n--------------------------\n")
+            if max_steps is not None and i >= max_steps:
+                print(f"--- Agent Stopped: Global max steps ({max_steps}) reached. ---")
+                return
 
-        else:
-            print("Did not receive a command. Retrying...")
-            sleep_duration += 0.5  # Exponential backoff for retries
+            time.sleep(0.5)
+            screenshot_image = capture_screen()
 
-        step_count += 1
+            # Get next action based on the full context
+            action_command = get_next_action(screenshot_image, objective, plan, step)
 
-    if is_done:
-        print("--- Objective Finished Successfully ---")
-    else:
-        print("--- Objective Stopped ---")
+            if action_command:
+                # The 'DONE' command now signals step completion
+                is_step_done, _ = execute_action(action_command)
+                if is_step_done:
+                    print(f"--- Step {i+1} marked as complete. ---")
+                    step_done = True  # Exit the sub-loop to the next step
+            else:
+                print("Warning: Did not receive a valid command from the model. Retrying...")
+                time.sleep(1) # Wait a bit longer on API failure
+
+            attempts += 1
+
+    print("\n--- Objective Finished ---")
 
 def main():
-    """The main interactive loop for the agent."""
+    """The main entry point for the agent."""
     parser = argparse.ArgumentParser(description="AI Desktop Agent")
+    parser.add_argument("--objective", type=str, default=None, help="The objective for the agent to perform.")
     parser.add_argument("--max-steps", type=int, default=None, help="Optional max steps per objective (default: unlimited)")
     args = parser.parse_args()
 
-    while True:
-        objective = input("Please enter your next objective (or type 'exit' to quit): ")
-        if objective.lower() == 'exit':
-            print("Exiting agent.")
-            break
-        if not objective.strip():
-            print("Objective cannot be empty.")
-            continue
+    if args.objective:
+        # If an objective is provided via command line, run it
+        run_objective(args.objective, args.max_steps)
+    else:
+        # Otherwise, enter interactive mode
+        print("No objective provided. Starting in interactive mode.")
+        while True:
+            objective = input("Please enter your next objective (or type 'exit' to quit): ")
+            if objective.lower() == 'exit':
+                print("Exiting agent.")
+                break
+            if not objective.strip():
+                print("Objective cannot be empty.")
+                continue
 
-        run_objective(objective, args.max_steps)
-        print("\n" + "="*30)
-        print("Objective complete. Ready for the next one.")
-        print("="*30 + "\n")
+            run_objective(objective, args.max_steps)
+            print("\n" + "="*30)
+            print("Objective complete. Ready for the next one.")
+            print("="*30 + "\n")
 
 
 if __name__ == "__main__":

@@ -64,43 +64,47 @@ def create_plan(objective):
         print(f"Error creating plan with Gemini: {e}")
         return []
 
-def get_next_action(image, main_objective, plan, current_step):
+def get_next_action(image, main_objective, plan, current_step, action_history):
     """
-    Sends the current screen and context to the Gemini model to get the next action.
+    Sends the current screen and context (including history) to Gemini to get the next action.
     """
     print(f"Thinking about next action for step: {current_step}")
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     width, height = image.size
+    mouse_x, mouse_y = pyautogui.position()
     plan_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(plan)])
+    history_str = "\n".join([f"- {a}" for a in action_history]) if action_history else "No actions taken yet."
 
     prompt_parts = [
         f"""
-        You are an AI agent controlling a desktop.
-        Your main objective is: '{main_objective}'.
+        You are an AI agent controlling a desktop. Your goal is to achieve the objective by following a plan.
 
-        You have created the following plan:
+        **Objective:** '{main_objective}'
+
+        **Plan:**
         {plan_str}
 
-        You are currently on this step: '{current_step}'.
+        **Current Step:** '{current_step}'
 
-        Analyze the screenshot and decide the single next action to take.
+        **Screen & Senses:**
+        - The screen is {width}x{height}.
+        - The mouse cursor is at ({mouse_x}, {mouse_y}).
 
-        **Action Strategy:**
-        1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`).
-        2.  **Mouse for Necessity:** Use mouse actions (`CLICK`) only when a keyboard action is not possible.
-        3.  **Be Precise:** For mouse clicks, provide the exact X,Y coordinates. The screen is {width}x{height}.
-        4.  **Sequences:** Use `COMMANDS` to group a short sequence of actions.
-        5.  **Step Completion:** If you have successfully completed the current step, your action MUST be `DONE "reason for completion"`. This will move you to the next step.
+        **Self-Correction:**
+        You have already taken these actions for the current step:
+        {history_str}
+
+        If your previous actions are not working or you are in a loop, you MUST try a different action. Analyze your history and the screen to find a new approach. Do not repeat failed actions.
 
         **Action Format (Strict):**
-        - `TYPE "text to type"`
-        - `PRESS "key"` (e.g., "enter", "tab", "ctrl+f")
+        - `TYPE "text"`
+        - `PRESS "key"`
         - `CLICK X,Y "reason"`
-        - `COMMANDS ["action1", "action2"]`
-        - `DONE "reason"`
+        - `COMMANDS ["action1", ...]`
+        - `DONE "reason"` (Use this ONLY when the current step is fully complete)
 
-        Now, determine the most efficient action to progress on your current step.
+        Determine the single best action to take next to progress on the current step.
         Current screen:
         """,
         image,
@@ -215,6 +219,7 @@ def run_objective(objective, max_steps=None):
         step_done = False
         attempts = 0
         max_attempts_per_step = 10  # Failsafe to prevent infinite loops
+        action_history = []
 
         # Sub-loop for each step
         while not step_done:
@@ -229,10 +234,11 @@ def run_objective(objective, max_steps=None):
             time.sleep(0.5)
             screenshot_image = capture_screen()
 
-            # Get next action based on the full context
-            action_command = get_next_action(screenshot_image, objective, plan, step)
+            # Get next action based on the full context, including history
+            action_command = get_next_action(screenshot_image, objective, plan, step, action_history)
 
             if action_command:
+                action_history.append(action_command)
                 # The 'DONE' command now signals step completion
                 is_step_done, _ = execute_action(action_command)
                 if is_step_done:

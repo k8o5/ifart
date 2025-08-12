@@ -22,89 +22,68 @@ def capture_screen():
     screenshot = pyautogui.screenshot()
     return screenshot
 
-def create_plan(objective):
+def get_next_action(interaction_state, image, main_objective, action_history, last_hover_target):
     """
-    Generates a step-by-step plan to achieve the given objective.
+    Sends the current screen and context to Gemini to get the next action, using a state-based prompt.
     """
-    print("Asking Gemini to create a plan...")
-    model = genai.GenerativeModel('gemini-2.5-flash')
-
-    prompt = f"""
-    You are an AI planner. Your task is to create a step-by-step plan to achieve the following objective.
-    The plan should be a sequence of simple, high-level actions.
-    For any web searches, you must use DuckDuckGo.
-
-    Objective: '{objective}'
-
-    Provide the plan as a numbered list. For example:
-    1. Open Firefox.
-    2. Navigate to duckduckgo.com.
-    3. Search for "best open source projects".
-    4. ...
-
-    Now, create the plan for the objective above.
-    """
-
-    try:
-        response = model.generate_content(prompt)
-        plan_text = response.text.strip()
-        # Parse the numbered list into a Python list
-        plan_steps = [step.strip() for step in re.findall(r'^\d+\.\s+(.*)', plan_text, re.MULTILINE)]
-        if not plan_steps:
-            # Fallback if the model doesn't return a numbered list
-            plan_steps = [line.strip() for line in plan_text.split('\n') if line.strip()]
-
-        print("--- Plan Created ---")
-        for i, step in enumerate(plan_steps, 1):
-            print(f"{i}. {step}")
-        print("--------------------")
-
-        return plan_steps
-    except Exception as e:
-        print(f"Error creating plan with Gemini: {e}")
-        return []
-
-def get_next_action(image, main_objective, plan, current_step):
-    """
-    Sends the current screen and context to the Gemini model to get the next action.
-    """
-    print(f"Thinking about next action for step: {current_step}")
+    print(f"Thinking about next action... (State: {interaction_state})")
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     width, height = image.size
-    plan_str = "\n".join([f"{i+1}. {s}" for i, s in enumerate(plan)])
+    mouse_x, mouse_y = pyautogui.position()
+    history_str = "\n".join([f"- {a}" for a in action_history]) if action_history else "No actions taken yet."
 
-    prompt_parts = [
-        f"""
-        You are an AI agent controlling a desktop.
-        Your main objective is: '{main_objective}'.
+    if interaction_state == "AWAITING_CONFIRMATION":
+        # Specialized prompt for the "Reflect" step
+        hover_context = f"You believe you are hovering over: '{last_hover_target}'." if last_hover_target else ""
+        prompt_parts = [
+            f"""
+            You have just moved your mouse to ({mouse_x}, {mouse_y}). {hover_context}
+            Your objective is: '{main_objective}'.
 
-        You have created the following plan:
-        {plan_str}
+            **Reflect and Decide:**
+            1.  Analyze the screenshot and your cursor position.
+            2.  Is this the correct place to click to make progress?
 
-        You are currently on this step: '{current_step}'.
+            **Next Action:**
+            - If YES, the position is correct, your action MUST be: `CLICK "reason for clicking"`
+            - If NO, the position is wrong, you MUST EITHER:
+                - `MOVE X,Y "new reason"` to a better position.
+                - Use a keyboard action like `PRESS "key"` if clicking is not the right approach.
 
-        Analyze the screenshot and decide the single next action to take.
+            Do not use `DONE` unless the entire objective is complete.
+            Current screen:
+            """,
+            image,
+        ]
+    else: # AWAITING_MOVE or any other general state
+        # General prompt for deciding the next high-level action
+        prompt_parts = [
+            f"""
+            You are an AI agent. Your goal is to achieve your objective.
 
-        **Action Strategy:**
-        1.  **Prioritize Keyboard:** Always prefer keyboard actions (`PRESS`, `TYPE`).
-        2.  **Mouse for Necessity:** Use mouse actions (`CLICK`) only when a keyboard action is not possible.
-        3.  **Be Precise:** For mouse clicks, provide the exact X,Y coordinates. The screen is {width}x{height}.
-        4.  **Sequences:** Use `COMMANDS` to group a short sequence of actions.
-        5.  **Step Completion:** If you have successfully completed the current step, your action MUST be `DONE "reason for completion"`. This will move you to the next step.
+            **Objective:** '{main_objective}'
 
-        **Action Format (Strict):**
-        - `TYPE "text to type"`
-        - `PRESS "key"` (e.g., "enter", "tab", "ctrl+f")
-        - `CLICK X,Y "reason"`
-        - `COMMANDS ["action1", "action2"]`
-        - `DONE "reason"`
+            **Screen & Senses:**
+            - The screen is {width}x{height}.
+            - The mouse cursor is at ({mouse_x}, {mouse_y}).
 
-        Now, determine the most efficient action to progress on your current step.
-        Current screen:
-        """,
-        image,
-    ]
+            **Self-Correction:**
+            Your action history for this objective:
+            {history_str}
+            If you are stuck, you MUST try a different action. Do not repeat failed actions.
+
+            **Action Format (Strict):**
+            - `MOVE X,Y "reason"` (to move the mouse for a future click)
+            - `TYPE "text"`
+            - `PRESS "key"`
+            - `DONE "reason"` (Use this ONLY when the objective is fully complete)
+
+            Determine the single best action to take next.
+            Current screen:
+            """,
+            image,
+        ]
 
     try:
         response = model.generate_content(prompt_parts)
@@ -141,48 +120,26 @@ def execute_action(action):
     action = action.strip()
     
     # Regex patterns for reliable parsing
-    click_pattern = re.match(r'CLICK\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
+    move_pattern = re.match(r'MOVE\s+(\d+),(\d+)\s+"(.*)"', action, re.IGNORECASE)
+    click_pattern = re.match(r'CLICK\s+"(.*)"', action, re.IGNORECASE)
     type_pattern = re.match(r'TYPE\s+"(.*)"', action, re.IGNORECASE)
     press_pattern = re.match(r'PRESS\s+"(.*)"', action, re.IGNORECASE)
     done_pattern = re.match(r'DONE\s+"(.*)"', action, re.IGNORECASE)
-    commands_pattern = re.match(r'COMMANDS\s+(.*)', action, re.IGNORECASE)
 
     try:
-        if commands_pattern:
-            commands_list_str = commands_pattern.group(1)
-            try:
-                commands_list = json.loads(commands_list_str)
-                if isinstance(commands_list, list):
-                    for command in commands_list:
-                        # Recursive call to execute each command in the list
-                        execute_action(command)
-                    return False, True  # Not done, but it was a COMMANDS action
-                else:
-                    raise ValueError("COMMANDS action requires a list of strings.")
-            except json.JSONDecodeError:
-                print(f"Error: Could not decode JSON in COMMANDS: {commands_list_str}")
-            except ValueError as e:
-                print(f"Error: {e}")
-            return False, False # Error case
-
-        elif click_pattern:
-            x, y, reason = int(click_pattern.group(1)), int(click_pattern.group(2)), click_pattern.group(3)
+        if move_pattern:
+            x, y, reason = int(move_pattern.group(1)), int(move_pattern.group(2)), move_pattern.group(3)
             # Validate coordinates against screen size
             screen_width, screen_height = pyautogui.size()
             if not (0 <= x < screen_width and 0 <= y < screen_height):
                 raise ValueError(f"Invalid coordinates ({x}, {y}) outside screen bounds (0-{screen_width-1}, 0-{screen_height-1})")
 
-            # Human-like mouse movement
-            target_x = x + random.randint(-2, 2)
-            target_y = y + random.randint(-2, 2)
+            # Move to coordinates
+            pyautogui.moveTo(x, y, duration=0.1)
 
-            # Ensure target is still within bounds
-            target_x = max(0, min(screen_width - 1, target_x))
-            target_y = max(0, min(screen_height - 1, target_y))
-
-            duration = random.uniform(0.2, 0.7)
-            tween = pyautogui.easeInOutQuad
-            pyautogui.moveTo(target_x, target_y, duration=duration, tween=tween)
+        elif click_pattern:
+            # Hover for a moment, then click at the current position
+            time.sleep(0.2)
             pyautogui.click()
 
         elif type_pattern:
@@ -209,51 +166,60 @@ def execute_action(action):
 # --- Main Loop ---
 
 def run_objective(objective, max_steps=None):
-    """Runs the agent for a single objective using a plan-based approach."""
+    """Runs the agent for a single objective until it is marked as DONE."""
     print(f"--- Starting Objective: {objective} ---")
 
-    plan = create_plan(objective)
-    if not plan:
-        print("--- Agent Stopped: Could not create a plan. ---")
-        return
+    objective_done = False
+    attempts = 0
+    action_history = []
+    last_hover_target = None
+    interaction_state = "AWAITING_MOVE"
 
-    # Main loop iterates through the plan
-    for i, step in enumerate(plan):
-        print(f"\n--- Executing Step {i+1}/{len(plan)}: {step} ---")
+    while not objective_done:
+        if max_steps is not None and attempts >= max_steps:
+            print(f"--- Agent Stopped: Max steps ({max_steps}) reached. ---")
+            break
 
-        step_done = False
-        attempts = 0
-        max_attempts_per_step = 10  # Failsafe to prevent infinite loops
+        time.sleep(0.5)
+        screenshot_image = capture_screen()
 
-        # Sub-loop for each step
-        while not step_done:
-            if attempts >= max_attempts_per_step:
-                print(f"--- Warning: Max attempts reached for step. Moving to next one. ---")
-                break
+        action_command = get_next_action(
+            interaction_state, screenshot_image, objective, action_history, last_hover_target
+        )
 
-            if max_steps is not None and i >= max_steps:
-                print(f"--- Agent Stopped: Global max steps ({max_steps}) reached. ---")
-                return
+        if action_command:
+            action_history.append(action_command)
 
-            time.sleep(0.5)
-            screenshot_image = capture_screen()
+            # State transition logic
+            if interaction_state == "AWAITING_MOVE" and action_command.upper().startswith("MOVE"):
+                interaction_state = "AWAITING_CONFIRMATION"
+            elif interaction_state == "AWAITING_CONFIRMATION":
+                if action_command.upper().startswith("CLICK"):
+                    interaction_state = "AWAITING_MOVE" # Reset after click
+                # If it's another MOVE, we stay in AWAITING_CONFIRMATION
 
-            # Get next action based on the full context
-            action_command = get_next_action(screenshot_image, objective, plan, step)
+            # Parse hover context from MOVE commands
+            move_match = re.match(r'MOVE\s+(\d+),(\d+)\s+"(.*)"', action_command, re.IGNORECASE)
+            if move_match:
+                last_hover_target = move_match.group(3)
+            elif not action_command.upper().startswith("CLICK"):
+                # Reset hover target if the action is not a click or a new move
+                last_hover_target = None
 
-            if action_command:
-                # The 'DONE' command now signals step completion
-                is_step_done, _ = execute_action(action_command)
-                if is_step_done:
-                    print(f"--- Step {i+1} marked as complete. ---")
-                    step_done = True  # Exit the sub-loop to the next step
-            else:
-                print("Warning: Did not receive a valid command from the model. Retrying...")
-                time.sleep(1) # Wait a bit longer on API failure
+            is_objective_done, _ = execute_action(action_command)
+            if is_objective_done:
+                print(f"--- Objective marked as complete. ---")
+                objective_done = True
+        else:
+            print("Warning: Did not receive a valid command from the model. Retrying...")
+            time.sleep(1)
 
-            attempts += 1
+        attempts += 1
 
-    print("\n--- Objective Finished ---")
+    if objective_done:
+        print("\n--- Objective Finished Successfully ---")
+    else:
+        print("\n--- Objective Stopped ---")
 
 def main():
     """The main entry point for the agent."""

@@ -63,34 +63,12 @@ RUN pip3 install --no-cache-dir \
 # Copy the agent script into the image
 COPY agent.py /agent.py
 
-# --- AUTOSTART CONFIGURATION ---
-# Create the autostart directory and the .desktop file to run the agent
-RUN mkdir -p /root/.config/autostart
-COPY <<EOF /root/.config/autostart/ai_agent.desktop
-[Desktop Entry]
-Type=Application
-Name=AI Agent
-Exec=xfce4-terminal -e "python3 /agent.py --objective '$AGENT_OBJECTIVE'"
-StartupNotify=false
-Terminal=false
-EOF
-
 # Erstellen des VNC-Startskripts
-# This script now handles the conditional startup of the Ollama service
+# This script now handles the conditional startup of the Ollama service and the agent itself
 RUN mkdir -p /opt/startup/
 COPY <<EOF /opt/startup/vnc_startup.sh
 #!/bin/bash
 export USER=root
-
-# --- Start Ollama Service if needed ---
-if [ "\$AGENT_MODEL" = "gemma" ]; then
-    echo "Starting Ollama service for Gemma..."
-    /usr/local/bin/ollama serve &
-    # Wait a moment for the service to initialize
-    sleep 5
-    echo "Pulling the ai/gemma3:latest model..."
-    /usr/local/bin/ollama pull ai/gemma3:latest &
-fi
 
 # --- VNC Setup ---
 mkdir -p /root/.vnc
@@ -100,8 +78,46 @@ chmod 600 /root/.vnc/passwd
 # --- Start Desktop and VNC ---
 startxfce4 &
 sleep 2
-vncserver "\$DISPLAY" -depth 24 -geometry "\$VNC_RESOLUTION" -localhost no
-/usr/share/novnc/utils/launch.sh --vnc localhost:"\$VNC_PORT" --listen "\$NO_VNC_PORT"
+vncserver "\$DISPLAY" -depth 24 -geometry "\$VNC_RESOLUTION" -localhost no &
+/usr/share/novnc/utils/launch.sh --vnc localhost:"\$VNC_PORT" --listen "\$NO_VNC_PORT" &
+
+# --- Agent Startup Logic ---
+# Wait for the desktop environment to be ready
+sleep 5
+
+# Launch the agent in a terminal window
+# The logic inside the terminal will handle which model to run
+xfce4-terminal -e "/bin/bash -c '
+    if [ \"\$AGENT_MODEL\" = \"gemma\" ]; then
+        echo \"--- Gemma Model Setup --- \"
+        echo \"Starting Ollama service...\"
+        /usr/local/bin/ollama serve &
+
+        echo \"Waiting for Ollama to be ready...\"
+        while ! curl -s --head http://localhost:11434 > /dev/null; do
+            sleep 1
+        done
+        echo \"Ollama is ready.\"
+
+        echo \"Pulling model ai/gemma3:latest. This may take a while...\"
+        /usr/local/bin/ollama pull ai/gemma3:latest
+        echo \"Model pull complete.\"
+
+    else
+        echo \"--- Gemini Model Setup --- \"
+        if [ -z \"\$GOOGLE_API_KEY\" ]; then
+            echo \"ERROR: GOOGLE_API_KEY is not set. The agent will fail.\"
+            echo \"Please provide it with --build-arg GOOGLE_API_KEY=\\\"YOUR_KEY\\\"\"
+        fi
+    fi
+
+    echo \"Starting agent...\"
+    python3 /agent.py --objective \"\$AGENT_OBJECTIVE\"
+
+    # Keep the terminal open for debugging after the script finishes
+    echo \"Agent script finished. Press Enter to close this terminal.\"
+    read
+'"
 EOF
 RUN chmod +x /opt/startup/vnc_startup.sh
 

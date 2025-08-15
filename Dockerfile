@@ -75,19 +75,16 @@ mkdir -p /root/.vnc
 echo "\$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd
 chmod 600 /root/.vnc/passwd
 
-# --- Start Desktop and VNC ---
+# --- Start Desktop and VNC Server ---
 startxfce4 &
 sleep 2
-vncserver "\$DISPLAY" -depth 24 -geometry "\$VNC_RESOLUTION" -localhost no &
-/usr/share/novnc/utils/launch.sh --vnc localhost:"\$VNC_PORT" --listen "\$NO_VNC_PORT" &
+vncserver "\$DISPLAY" -depth 24 -geometry "\$VNC_RESOLUTION" -localhost no
 
 # --- Agent Startup Logic ---
-# Wait for the desktop environment to be ready
-sleep 5
-
-# Launch the agent in a terminal window
-# The logic inside the terminal will handle which model to run
+# Launch the agent in a terminal window, but in the background
+# so that the script can proceed to the final noVNC step.
 xfce4-terminal -e "/bin/bash -c '
+    # This entire block runs inside the new terminal
     if [ \"\$AGENT_MODEL\" = \"gemma\" ]; then
         echo \"--- Gemma Model Setup --- \"
         echo \"Starting Ollama service...\"
@@ -95,6 +92,7 @@ xfce4-terminal -e "/bin/bash -c '
 
         echo \"Waiting for Ollama to be ready...\"
         while ! curl -s --head http://localhost:11434 > /dev/null; do
+            echo -n \".\"
             sleep 1
         done
         echo \"Ollama is ready.\"
@@ -107,17 +105,20 @@ xfce4-terminal -e "/bin/bash -c '
         echo \"--- Gemini Model Setup --- \"
         if [ -z \"\$GOOGLE_API_KEY\" ]; then
             echo \"ERROR: GOOGLE_API_KEY is not set. The agent will fail.\"
-            echo \"Please provide it with --build-arg GOOGLE_API_KEY=\\\"YOUR_KEY\\\"\"
         fi
     fi
 
     echo \"Starting agent...\"
     python3 /agent.py --objective \"\$AGENT_OBJECTIVE\"
 
-    # Keep the terminal open for debugging after the script finishes
     echo \"Agent script finished. Press Enter to close this terminal.\"
     read
-'"
+'" &
+
+# --- Start noVNC as the main foreground process ---
+# This MUST be the last command to keep the container alive and serve the web UI
+echo "Starting noVNC server on port \$NO_VNC_PORT..."
+/usr/share/novnc/utils/launch.sh --vnc localhost:"\$VNC_PORT" --listen "\$NO_VNC_PORT"
 EOF
 RUN chmod +x /opt/startup/vnc_startup.sh
 

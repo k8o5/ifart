@@ -3,8 +3,11 @@ FROM debian:11-slim
 
 # Metadaten für das Image
 LABEL maintainer="Docker GUI"
-LABEL version="2.1"
-LABEL description="Debian mit XFCE, VNC-Server und Google Gemini 2.5 Flash Agent (Autostart, Optimized for Speed and Precision)"
+LABEL version="2.2"
+LABEL description="Debian mit XFCE, VNC-Server und einem AI-Agenten (Gemini oder Gemma)"
+
+# Build-Argument zur Auswahl des Modellanbieters (gemini oder gemma)
+ARG MODEL_PROVIDER=gemini
 
 # Umgebungsvariablen für die VNC-Einrichtung und Agent
 ENV DISPLAY=:1 \
@@ -12,11 +15,12 @@ ENV DISPLAY=:1 \
     NO_VNC_PORT=6901 \
     VNC_RESOLUTION=1280x720 \
     VNC_PASSWORD=password \
-    AGENT_OBJECTIVE="Open the file manager and create a new folder named 'Gemini-2.5-Test'." \
+    AGENT_OBJECTIVE="Open the file manager and create a new folder named 'Test-Folder'." \
+    AGENT_MODEL=${MODEL_PROVIDER} \
     GOOGLE_API_KEY=""
 
-# Installation der notwendigen Pakete (restored ALL original packages for full compatibility)
-# Includes net-tools, procps, wget, and essentials for pyautogui (X11, screenshot tools) and XFCE/VNC
+# Installation der notwendigen Pakete
+# Inklusive curl für den Ollama-Installer
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     dbus-x11 \
@@ -35,47 +39,69 @@ RUN apt-get update && \
     gnome-screenshot \
     xfce4-terminal \
     firefox-esr \
+    curl \
     && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Install Python libraries for the agent (no-cache for smaller image)
+# Conditionally install Ollama if MODEL_PROVIDER is 'gemma'
+# Note: This runs the install script. The service itself is started in vnc_startup.sh
+RUN if [ "$MODEL_PROVIDER" = "gemma" ]; then \
+        echo "Installing Ollama for Gemma model..."; \
+        curl -f https://ollama.com/install.sh | sh; \
+    else \
+        echo "Skipping Ollama installation for Gemini model."; \
+    fi
+
+# Install Python libraries for the agent
 RUN pip3 install --no-cache-dir \
     pyautogui \
     google-generativeai \
-    Pillow
+    Pillow \
+    requests
 
 # Copy the agent script into the image
 COPY agent.py /agent.py
 
 # --- AUTOSTART CONFIGURATION ---
-# Create the autostart directory and the .desktop file to run the agent on startup with optional objective
+# Create the autostart directory and the .desktop file to run the agent
 RUN mkdir -p /root/.config/autostart
-COPY <<EOF /root/.config/autostart/agent.desktop
+COPY <<EOF /root/.config/autostart/ai_agent.desktop
 [Desktop Entry]
 Type=Application
-Name=AI Agent (Gemini 2.5 Flash)
+Name=AI Agent
 Exec=xfce4-terminal -e "python3 /agent.py --objective '$AGENT_OBJECTIVE'"
 StartupNotify=false
 Terminal=false
 EOF
 
-# Erstellen des VNC-Startskripts (restored to original with enhancements for robust startup)
+# Erstellen des VNC-Startskripts
+# This script now handles the conditional startup of the Ollama service
 RUN mkdir -p /opt/startup/
 COPY <<EOF /opt/startup/vnc_startup.sh
 #!/bin/bash
 export USER=root
+
+# --- Start Ollama Service if needed ---
+if [ "\$AGENT_MODEL" = "gemma" ]; then
+    echo "Starting Ollama service for Gemma..."
+    /usr/local/bin/ollama serve &
+    # Wait a moment for the service to initialize
+    sleep 5
+    echo "Pulling the ai/gemma3:latest model..."
+    /usr/local/bin/ollama pull ai/gemma3:latest &
+fi
+
+# --- VNC Setup ---
 mkdir -p /root/.vnc
-echo "$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd
+echo "\$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd
 chmod 600 /root/.vnc/passwd
-# Start XFCE session to ensure autostart works (added for reliability)
+
+# --- Start Desktop and VNC ---
 startxfce4 &
-# Wait briefly for desktop to initialize
 sleep 2
-# Start VNC server (as in original)
-vncserver "$DISPLAY" -depth 24 -geometry "$VNC_RESOLUTION" -localhost no
-# Start noVNC (as in original)
-/usr/share/novnc/utils/launch.sh --vnc localhost:"$VNC_PORT" --listen "$NO_VNC_PORT"
+vncserver "\$DISPLAY" -depth 24 -geometry "\$VNC_RESOLUTION" -localhost no
+/usr/share/novnc/utils/launch.sh --vnc localhost:"\$VNC_PORT" --listen "\$NO_VNC_PORT"
 EOF
 RUN chmod +x /opt/startup/vnc_startup.sh
 

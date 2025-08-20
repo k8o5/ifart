@@ -1,4 +1,5 @@
 import pyautogui
+import google.generativeai as genai
 import os
 import time
 import re
@@ -6,21 +7,13 @@ import argparse
 from PIL import Image
 import random
 import json
-import io
-import base64
-import requests
 
 # --- Configuration ---
-AGENT_MODEL = os.environ.get("AGENT_MODEL", "gemini").lower()
-OLLAMA_URL = "http://localhost:11434/api/generate"
+api_key = os.environ.get("GOOGLE_API_KEY")
+if not api_key:
+    raise ValueError("Please set the GOOGLE_API_KEY environment variable.")
 
-# Conditional configuration for Gemini
-if AGENT_MODEL == "gemini":
-    import google.generativeai as genai
-    api_key = os.environ.get("GOOGLE_API_KEY")
-    if not api_key:
-        raise ValueError("Please set the GOOGLE_API_KEY environment variable for the Gemini model.")
-    genai.configure(api_key=api_key)
+genai.configure(api_key=api_key)
 
 # --- Core Functions ---
 
@@ -29,77 +22,11 @@ def capture_screen():
     screenshot = pyautogui.screenshot()
     return screenshot
 
-def get_next_action_gemma(interaction_state, image, main_objective, action_history, last_hover_target):
-    """
-    Sends the current screen and context to a local Gemma model via Ollama to get the next action.
-    """
-    print(f"Thinking about next action with Gemma... (State: {interaction_state})")
-
-    # Convert PIL image to base64
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-    width, height = image.size
-    mouse_x, mouse_y = pyautogui.position()
-    history_str = "\n".join([f"- {a}" for a in action_history]) if action_history else "No actions taken yet."
-
-    if interaction_state == "AWAITING_CONFIRMATION":
-        hover_context = f"You believe you are hovering over: '{last_hover_target}'." if last_hover_target else ""
-        prompt_text = f"""
-You have just moved your mouse to ({mouse_x}, {mouse_y}). {hover_context}
-Your objective is: '{main_objective}'.
-**Reflect and Decide:**
-1. Analyze the screenshot and your cursor position.
-2. Is this the correct place to click to make progress?
-**Next Action:**
-- If YES, the position is correct, your action MUST be: `CLICK "reason for clicking"`
-- If NO, the position is wrong, you MUST EITHER:
-    - `MOVE X,Y "new reason"` to a better position.
-    - Use a keyboard action like `PRESS "key"` if clicking is not the right approach.
-Do not use `DONE` unless the entire objective is complete.
-"""
-    else:  # AWAITING_MOVE or any other general state
-        prompt_text = f"""
-You are an AI agent. Your goal is to achieve your objective.
-**Objective:** '{main_objective}'
-**Screen & Senses:**
-- The screen is {width}x{height}.
-- The mouse cursor is at ({mouse_x}, {mouse_y}).
-**Self-Correction:**
-Your action history for this objective:
-{history_str}
-If you are stuck, you MUST try a different action. Do not repeat failed actions.
-**Action Format (Strict):**
-- `MOVE X,Y "reason"` (to move the mouse for a future click)
-- `TYPE "text"`
-- `PRESS "key"`
-- `DONE "reason"` (Use this ONLY when the objective is fully complete)
-Determine the single best action to take next.
-"""
-
-    payload = {
-        "model": "ai/gemma3:latest",
-        "prompt": prompt_text,
-        "images": [img_base64],
-        "stream": False
-    }
-
-    try:
-        response = requests.post(OLLAMA_URL, json=payload)
-        response.raise_for_status()
-        response_json = response.json()
-        action_text = response_json.get("response", "").strip()
-        return action_text
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling Ollama API: {e}")
-        return None
-
-def get_next_action_gemini(interaction_state, image, main_objective, action_history, last_hover_target):
+def get_next_action(interaction_state, image, main_objective, action_history, last_hover_target):
     """
     Sends the current screen and context to Gemini to get the next action, using a state-based prompt.
     """
-    print(f"Thinking about next action with Gemini... (State: {interaction_state})")
+    print(f"Thinking about next action... (State: {interaction_state})")
     model = genai.GenerativeModel('gemini-2.5-flash')
 
     width, height = image.size
@@ -107,41 +34,51 @@ def get_next_action_gemini(interaction_state, image, main_objective, action_hist
     history_str = "\n".join([f"- {a}" for a in action_history]) if action_history else "No actions taken yet."
 
     if interaction_state == "AWAITING_CONFIRMATION":
+        # Specialized prompt for the "Reflect" step
         hover_context = f"You believe you are hovering over: '{last_hover_target}'." if last_hover_target else ""
         prompt_parts = [
             f"""
             You have just moved your mouse to ({mouse_x}, {mouse_y}). {hover_context}
             Your objective is: '{main_objective}'.
+
             **Reflect and Decide:**
             1.  Analyze the screenshot and your cursor position.
             2.  Is this the correct place to click to make progress?
+
             **Next Action:**
             - If YES, the position is correct, your action MUST be: `CLICK "reason for clicking"`
             - If NO, the position is wrong, you MUST EITHER:
                 - `MOVE X,Y "new reason"` to a better position.
                 - Use a keyboard action like `PRESS "key"` if clicking is not the right approach.
+
             Do not use `DONE` unless the entire objective is complete.
             Current screen:
             """,
             image,
         ]
-    else:  # AWAITING_MOVE or any other general state
+    else: # AWAITING_MOVE or any other general state
+        # General prompt for deciding the next high-level action
         prompt_parts = [
             f"""
             You are an AI agent. Your goal is to achieve your objective.
+
             **Objective:** '{main_objective}'
+
             **Screen & Senses:**
             - The screen is {width}x{height}.
             - The mouse cursor is at ({mouse_x}, {mouse_y}).
+
             **Self-Correction:**
             Your action history for this objective:
             {history_str}
             If you are stuck, you MUST try a different action. Do not repeat failed actions.
+
             **Action Format (Strict):**
             - `MOVE X,Y "reason"` (to move the mouse for a future click)
             - `TYPE "text"`
             - `PRESS "key"`
             - `DONE "reason"` (Use this ONLY when the objective is fully complete)
+
             Determine the single best action to take next.
             Current screen:
             """,
@@ -156,14 +93,7 @@ def get_next_action_gemini(interaction_state, image, main_objective, action_hist
         print(f"Error calling Gemini API: {e}")
         return None
 
-def get_next_action(interaction_state, image, main_objective, action_history, last_hover_target):
-    """Dispatcher function to select the correct model provider."""
-    if AGENT_MODEL == 'gemma':
-        return get_next_action_gemma(interaction_state, image, main_objective, action_history, last_hover_target)
-    else:
-        return get_next_action_gemini(interaction_state, image, main_objective, action_history, last_hover_target)
-
-def get_vision_understanding_gemini(image):
+def get_vision_understanding(image):
     """
     Uses Gemini to describe the given image.
     """
@@ -179,38 +109,6 @@ def get_vision_understanding_gemini(image):
     except Exception as e:
         print(f"Error calling Gemini API for vision understanding: {e}")
         return "Error: Could not understand the screen."
-
-def get_vision_understanding_gemma(image):
-    """
-    Uses a local Gemma model to describe the given image.
-    """
-    print("Gemma is trying to understand the screen...")
-    buffered = io.BytesIO()
-    image.save(buffered, format="PNG")
-    img_base64 = base64.b64encode(buffered.getvalue()).decode('utf-8')
-
-    payload = {
-        "model": "ai/gemma3:latest",
-        "prompt": "Describe what you see on the screen. Be concise and focus on the most important elements.",
-        "images": [img_base64],
-        "stream": False
-    }
-
-    try:
-        response = requests.post(OLLAMA_URL, json=payload)
-        response.raise_for_status()
-        response_json = response.json()
-        return response_json.get("response", "Error: Could not understand the screen.").strip()
-    except requests.exceptions.RequestException as e:
-        print(f"Error calling Ollama API for vision understanding: {e}")
-        return "Error: Could not understand the screen."
-
-def get_vision_understanding(image):
-    """Dispatcher function to select the correct model provider for vision."""
-    if AGENT_MODEL == 'gemma':
-        return get_vision_understanding_gemma(image)
-    else:
-        return get_vision_understanding_gemini(image)
 
 def execute_action(action):
     """Parses and executes the action string from the LLM using regex for robustness, with coordinate validation."""

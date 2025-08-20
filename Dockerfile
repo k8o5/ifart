@@ -3,11 +3,8 @@ FROM debian:11-slim
 
 # Metadaten für das Image
 LABEL maintainer="Docker GUI"
-LABEL version="2.2"
-LABEL description="Debian mit XFCE, VNC-Server und einem AI-Agenten (Gemini oder Gemma)"
-
-# Build-Argument zur Auswahl des Modellanbieters (gemini oder gemma)
-ARG MODEL_PROVIDER=gemini
+LABEL version="2.1"
+LABEL description="Debian mit XFCE, VNC-Server und Google Gemini 2.5 Flash Agent (Autostart, Optimized for Speed and Precision)"
 
 # Umgebungsvariablen für die VNC-Einrichtung und Agent
 ENV DISPLAY=:1 \
@@ -15,12 +12,11 @@ ENV DISPLAY=:1 \
     NO_VNC_PORT=6901 \
     VNC_RESOLUTION=1280x720 \
     VNC_PASSWORD=password \
-    AGENT_OBJECTIVE="Open the file manager and create a new folder named 'Test-Folder'." \
-    AGENT_MODEL=${MODEL_PROVIDER} \
+    AGENT_OBJECTIVE="Open the file manager and create a new folder named 'Gemini-2.5-Test'." \
     GOOGLE_API_KEY=""
 
-# Installation der notwendigen Pakete
-# Inklusive curl für den Ollama-Installer
+# Installation der notwendigen Pakete (restored ALL original packages for full compatibility)
+# Includes net-tools, procps, wget, and essentials for pyautogui (X11, screenshot tools) and XFCE/VNC
 RUN apt-get update && \
     apt-get install -y --no-install-recommends \
     dbus-x11 \
@@ -39,86 +35,47 @@ RUN apt-get update && \
     gnome-screenshot \
     xfce4-terminal \
     firefox-esr \
-    curl \
     && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/*
 
-# Conditionally install Ollama if MODEL_PROVIDER is 'gemma'
-# Note: This runs the install script. The service itself is started in vnc_startup.sh
-RUN if [ "$MODEL_PROVIDER" = "gemma" ]; then \
-        echo "Installing Ollama for Gemma model..."; \
-        curl -f https://ollama.com/install.sh | sh; \
-    else \
-        echo "Skipping Ollama installation for Gemini model."; \
-    fi
-
-# Install Python libraries for the agent
+# Install Python libraries for the agent (no-cache for smaller image)
 RUN pip3 install --no-cache-dir \
     pyautogui \
     google-generativeai \
-    Pillow \
-    requests
+    Pillow
 
 # Copy the agent script into the image
 COPY agent.py /agent.py
 
-# Erstellen des VNC-Startskripts
-# This script now handles the conditional startup of the Ollama service and the agent itself
+# --- AUTOSTART CONFIGURATION ---
+# Create the autostart directory and the .desktop file to run the agent on startup with optional objective
+RUN mkdir -p /root/.config/autostart
+COPY <<EOF /root/.config/autostart/agent.desktop
+[Desktop Entry]
+Type=Application
+Name=AI Agent (Gemini 2.5 Flash)
+Exec=xfce4-terminal -e "python3 /agent.py --objective '$AGENT_OBJECTIVE'"
+StartupNotify=false
+Terminal=false
+EOF
+
+# Erstellen des VNC-Startskripts (restored to original with enhancements for robust startup)
 RUN mkdir -p /opt/startup/
 COPY <<EOF /opt/startup/vnc_startup.sh
 #!/bin/bash
 export USER=root
-
-# --- VNC Setup ---
 mkdir -p /root/.vnc
-echo "\$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd
+echo "$VNC_PASSWORD" | vncpasswd -f > /root/.vnc/passwd
 chmod 600 /root/.vnc/passwd
-
-# --- Start Desktop and VNC Server ---
+# Start XFCE session to ensure autostart works (added for reliability)
 startxfce4 &
+# Wait briefly for desktop to initialize
 sleep 2
-vncserver "\$DISPLAY" -depth 24 -geometry "\$VNC_RESOLUTION" -localhost no
-
-# --- Agent Startup Logic ---
-# Launch the agent in a terminal window, but in the background
-# so that the script can proceed to the final noVNC step.
-xfce4-terminal -e "/bin/bash -c '
-    # This entire block runs inside the new terminal
-    if [ \"\$AGENT_MODEL\" = \"gemma\" ]; then
-        echo \"--- Gemma Model Setup --- \"
-        echo \"Starting Ollama service...\"
-        /usr/local/bin/ollama serve &
-
-        echo \"Waiting for Ollama to be ready...\"
-        while ! curl -s --head http://localhost:11434 > /dev/null; do
-            echo -n \".\"
-            sleep 1
-        done
-        echo \"Ollama is ready.\"
-
-        echo \"Pulling model ai/gemma3:latest. This may take a while...\"
-        /usr/local/bin/ollama pull ai/gemma3:latest
-        echo \"Model pull complete.\"
-
-    else
-        echo \"--- Gemini Model Setup --- \"
-        if [ -z \"\$GOOGLE_API_KEY\" ]; then
-            echo \"ERROR: GOOGLE_API_KEY is not set. The agent will fail.\"
-        fi
-    fi
-
-    echo \"Starting agent...\"
-    python3 /agent.py --objective \"\$AGENT_OBJECTIVE\"
-
-    echo \"Agent script finished. Press Enter to close this terminal.\"
-    read
-'" &
-
-# --- Start noVNC as the main foreground process ---
-# This MUST be the last command to keep the container alive and serve the web UI
-echo "Starting noVNC server on port \$NO_VNC_PORT..."
-/usr/share/novnc/utils/launch.sh --vnc localhost:"\$VNC_PORT" --listen "\$NO_VNC_PORT"
+# Start VNC server (as in original)
+vncserver "$DISPLAY" -depth 24 -geometry "$VNC_RESOLUTION" -localhost no
+# Start noVNC (as in original)
+/usr/share/novnc/utils/launch.sh --vnc localhost:"$VNC_PORT" --listen "$NO_VNC_PORT"
 EOF
 RUN chmod +x /opt/startup/vnc_startup.sh
 

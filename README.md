@@ -79,3 +79,15 @@ From there, you can run the agent script with a custom objective:
 ```bash
 python3 /agent.py --objective "Your custom objective here."
 ```
+
+## Troubleshooting
+
+### Docker Build Error on Arch Linux
+
+If you encounter an error message similar to `failed to add the host ... operation not supported` while running `docker build`, it is likely due to a Docker networking issue on your host system.
+
+To resolve this, you can use the host's network for the build process by adding the `--network=host` flag to the build command:
+
+```bash
+docker build --network=host -t ai-desktop-agent .
+```
